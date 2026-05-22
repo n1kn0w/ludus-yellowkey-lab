@@ -190,21 +190,65 @@ Si tout fonctionne, le screenshot `05_after_1.png` montre une fenetre
 recovery key BitLocker** -- exactement ce que `shell.png` du repo upstream
 illustre.
 
-## Limites observees
+## Limites observees -- diagnostic complet
 
-Le shell obtenu fonctionne mais voit **zero disque fixe** :
+Le shell obtenu fonctionne mais voit **zero disque fixe**, peu importe le
+type de protector BitLocker (TPM-only sur C:, ou Password sur un second
+volume) :
 
 - `diskpart` : `list disk` -> *"There are no fixed disks to show."*
-- `mountvol` : seulement X:\ (WinRE ramdisk) et D:\ (CD-ROM)
+- `mountvol` : seulement X:\ (WinRE ramdisk) et D:\ (CD-ROM IDE emule)
 - `wmic diskdrive list brief` : *"No Instance(s) Available."*
-- `manage-bde -status` : *"There are no disk volumes that can be protected
-  with BitLocker."*
 
-Le `shell.png` du repo originel s'arrete egalement au prompt -- l'auteur ne
-demontre pas l'acces R/W au C:. La vuln telle que decrite = obtenir un shell
-admin WinRE sans saisir la recovery key. Convertir ce shell en lecture du
-volume chiffre necessite probablement des etapes additionnelles non
-publiees (chargement manuel de drivers, manipulation FVE...).
+### Cause racine identifiee : WinRE.wim ne contient pas les drivers virtio
+
+```
+X:\Windows\System32>dir x:\windows\system32\drivers\vio*
+File Not Found
+
+X:\Windows\System32>dir x:\windows\inf\vio*
+File Not Found
+```
+
+Le template Ludus `win11-22h2-x64-enterprise-template` provisionne le disque
+en `virtio-blk`, mais le `winre.wim` qui est extrait dans le RAM disk de
+WinRE n'a pas `viostor.sys` / `vioscsi.sys`. Au boot :
+
+1. `bootmgfw.efi` lit la recovery partition via les UEFI services natifs
+   (pas besoin de driver Windows pour ca)
+2. WinRE.wim est charge en RAM, devient X:
+3. Le kernel WinRE demarre avec uniquement les drivers presents dans
+   `X:\Windows\System32\drivers\` -> pas de virtio
+4. Resultat : le kernel WinRE ne peut pas voir les disques `virtio0`
+   (OS) et `scsi1` (data)
+5. Le bypass YellowKey spawn un cmd **dans ce kernel** -> le cmd voit X:
+   (ramdisk) + D: (CD-ROM IDE emule) et c'est tout
+
+C'est donc une limite de **l'environnement Proxmox/virtio + WinRE
+non-modifie**, pas du bypass YellowKey en lui-meme. Le `shell.png` du
+repo upstream est probablement pris sur du materiel ou la WinRE
+embarque les bons drivers (AHCI/SATA/NVMe natifs).
+
+### Comment rendre le PoC complet (acces effectif au C:)
+
+Trois options non encore testees ici :
+
+1. **Injecter virtio dans WinRE.wim** au moment du build du template :
+   ```
+   # Extraire winre.wim de la recovery partition
+   reagentc /disable
+   # winre.wim est maintenant dans C:\Windows\System32\Recovery\
+   dism /Mount-Wim /WimFile:C:\Windows\System32\Recovery\Winre.wim /Index:1 /MountDir:C:\Mount
+   dism /Image:C:\Mount /Add-Driver /Driver:C:\path\to\virtio\drivers /Recurse
+   dism /Unmount-Wim /MountDir:C:\Mount /Commit
+   reagentc /enable
+   ```
+2. **Changer le bus du disque OS** de `virtio0` a `sata0` au moment du
+   provisioning Ludus (necessite rebuild du template).
+3. **Charger drvload depuis l'exploit** -- mais comme les fichiers virtio
+   ne sont pas non plus dans X:\Windows\inf\, faudrait les fournir via un
+   chemin accessible (par exemple, les pre-deposer sur la partition EFI
+   avec FsTx).
 
 ## Detail technique : envoyer un `:` via QMP
 
