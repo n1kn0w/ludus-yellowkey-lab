@@ -1,0 +1,16 @@
+# BitLocker recovery passwords -- never commit
+recovery-keys/
+*.recovery-key
+yk-recovery-*.txt
+
+# Local screenshots from intermediate runs (poc-screenshots/ IS tracked,
+# but ad-hoc captures aren't)
+/tmp/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

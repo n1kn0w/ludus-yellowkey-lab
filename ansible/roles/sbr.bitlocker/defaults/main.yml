@@ -1,0 +1,15 @@
+---
+# Type de protecteur BitLocker : "tpm" (UEFI + vTPM) ou "password" (BIOS legacy).
+bitlocker_protector: tpm
+
+# Mot de passe de demarrage utilise quand bitlocker_protector == "password".
+bitlocker_startup_password: "YellowKey!2026"
+
+# Chemin local (Ludus host) ou stocker la recovery password recuperee.
+bitlocker_recovery_password_dest: "/tmp/yk-recovery-{{ inventory_hostname }}.txt"
+
+# Lettre du volume a chiffrer (OS).
+bitlocker_target_drive: "C:"
+
+# Mode de chiffrement : utilise -UsedSpaceOnly pour aller plus vite (suffit pour le PoC).
+bitlocker_used_space_only: true

@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://docs.ludus.cloud/schemas/range-config.json
+#
+# YellowKey BitLocker bypass PoC lab.
+# - 1x Windows 11 22H2 (UEFI + vTPM)  -> cible YellowKey, BitLocker TPM-only
+#
+# La VM Server 2022 a ete envisagee mais retiree :
+#   1. le template `win2022-server-x64-template` (Ludus) ne sysprep pas correctement
+#      l'OOBE post-clone -- la VM reste bloquee sur l'ecran "Choose your keyboard
+#      layout" et n'expose donc pas WinRM (rebuild de template necessaire).
+#   2. il est en BIOS legacy : BitLocker en TPM-only sur l'OS drive exige
+#      UEFI + Secure Boot.
+#
+# Le vTPM et le disque "USB" secondaire sont ajoutes hors-Ludus via
+# scripts/post-deploy-hw.sh (le schema range-config Ludus n'expose pas ces options).
+
+ludus:
+  - vm_name: "{{ range_id }}-yk-win11"
+    hostname: "{{ range_id }}-yk-win11"
+    template: win11-22h2-x64-enterprise-template
+    vlan: 20
+    ip_last_octet: 11
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    ansible_groups:
+      - yellowkey_targets
+    role_vars:
+      bitlocker_protector: tpm
+      bitlocker_recovery_password_dest: "/tmp/yk-recovery-{{ inventory_hostname }}.txt"
+    roles:
+      - sbr.bitlocker
+
+defaults:
+  enable_dynamic_wallpaper: false
+  snapshot_with_RAM: false

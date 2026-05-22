@@ -1,0 +1,107 @@
+---
+# Active BitLocker sur le volume OS pour la PoC YellowKey.
+# Suppose un vTPM 2.0 ajoute par scripts/post-deploy-hw.sh.
+# Si pas de TPM detecte, le role devient no-op (1er deploy avant ajout du vTPM).
+
+- name: Verifier presence du TPM
+  ansible.windows.win_powershell:
+    script: |
+      try {
+        $tpm = Get-Tpm -ErrorAction Stop
+        [PSCustomObject]@{
+          Present      = [bool]$tpm.TpmPresent
+          Ready        = [bool]$tpm.TpmReady
+          Enabled      = [bool]$tpm.TpmEnabled
+          Activated    = [bool]$tpm.TpmActivated
+          OwnerAuthSet = [bool]$tpm.TpmOwnerAuthSet
+        }
+      } catch {
+        [PSCustomObject]@{
+          Present = $false; Ready = $false; Enabled = $false;
+          Activated = $false; OwnerAuthSet = $false
+        }
+      }
+  register: tpm_state
+
+- name: Skip BitLocker -- pas de TPM detecte
+  ansible.builtin.debug:
+    msg: >-
+      Aucun TPM detecte sur cette VM. BitLocker non active.
+      Lance scripts/post-deploy-hw.sh puis relance le deploy avec
+      --tags user-defined-roles.
+  when: not tpm_state.output[0].Present
+
+- name: Activer et chiffrer BitLocker (TPM protector)
+  when: tpm_state.output[0].Present
+  block:
+    - name: Initialiser le TPM si non pret
+      ansible.windows.win_powershell:
+        script: |
+          Initialize-Tpm -AllowClear -AllowPhysicalPresence -ErrorAction Stop
+      when: not tpm_state.output[0].Ready
+
+    - name: Etat BitLocker actuel sur {{ bitlocker_target_drive }}
+      ansible.windows.win_powershell:
+        script: |
+          $v = Get-BitLockerVolume -MountPoint "{{ bitlocker_target_drive }}"
+          [PSCustomObject]@{
+            ProtectionStatus     = $v.ProtectionStatus.ToString()
+            VolumeStatus         = $v.VolumeStatus.ToString()
+            EncryptionPercentage = $v.EncryptionPercentage
+            KeyProtectors        = @($v.KeyProtector | ForEach-Object { $_.KeyProtectorType.ToString() })
+          }
+      register: bitlocker_state
+
+    - name: Activer BitLocker avec TPM protector
+      ansible.windows.win_powershell:
+        script: |
+          Enable-BitLocker -MountPoint "{{ bitlocker_target_drive }}" -TpmProtector `
+            {% if bitlocker_used_space_only %}-UsedSpaceOnly{% endif %} `
+            -SkipHardwareTest -ErrorAction Stop | Out-Null
+          Add-BitLockerKeyProtector -MountPoint "{{ bitlocker_target_drive }}" `
+            -RecoveryPasswordProtector | Out-Null
+      when: bitlocker_state.output[0].ProtectionStatus == "Off"
+
+    - name: Recuperer la recovery password
+      ansible.windows.win_powershell:
+        script: |
+          $rp = (Get-BitLockerVolume -MountPoint "{{ bitlocker_target_drive }}").KeyProtector |
+                Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } |
+                Select-Object -First 1
+          [PSCustomObject]@{
+            KeyProtectorId   = $rp.KeyProtectorId
+            RecoveryPassword = $rp.RecoveryPassword
+          }
+      register: recovery_info
+
+    - name: Sauvegarder la recovery password cote Ludus host
+      ansible.builtin.copy:
+        content: |
+          Host           : {{ inventory_hostname }}
+          Drive          : {{ bitlocker_target_drive }}
+          KeyProtectorId : {{ recovery_info.output[0].KeyProtectorId }}
+          RecoveryKey    : {{ recovery_info.output[0].RecoveryPassword }}
+        dest: "{{ bitlocker_recovery_password_dest }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Redemarrer pour activer la protection BitLocker
+      ansible.windows.win_reboot:
+        reboot_timeout: 600
+      when: bitlocker_state.output[0].ProtectionStatus == "Off"
+
+    - name: Verifier la protection apres reboot
+      ansible.windows.win_powershell:
+        script: |
+          $v = Get-BitLockerVolume -MountPoint "{{ bitlocker_target_drive }}"
+          [PSCustomObject]@{
+            ProtectionStatus     = $v.ProtectionStatus.ToString()
+            VolumeStatus         = $v.VolumeStatus.ToString()
+            EncryptionPercentage = $v.EncryptionPercentage
+          }
+      register: bitlocker_final
+
+    - name: Afficher l'etat final BitLocker
+      ansible.builtin.debug:
+        var: bitlocker_final.output[0]
